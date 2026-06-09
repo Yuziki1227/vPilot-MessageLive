@@ -8,7 +8,7 @@ namespace vPilot_MessageLive {
     internal class MessageLiveClient {
 
         private const string BASE_URL = "https://mlive.uk";
-        private const string USER_AGENT = "vPilot-MessageLive/2.1";
+        private const string USER_AGENT = "vPilot-MessageLive/2.3";
 
         private static readonly HttpClient client = new HttpClient();
 
@@ -74,6 +74,28 @@ namespace vPilot_MessageLive {
             } catch (Exception ex) {
                 logAction?.Invoke("Poll error: " + ex.Message);
                 return new List<MessageLiveMessage>();
+            }
+        }
+
+        /// <summary>
+        /// Delete a processed message from MessageLive
+        /// </summary>
+        public async Task<bool> DeleteMessage(string id) {
+            if (string.IsNullOrWhiteSpace(id)) return false;
+
+            try {
+                var request = new HttpRequestMessage(HttpMethod.Delete, BASE_URL + "/api/messages/" + Uri.EscapeDataString(id));
+                request.Headers.Add("X-API-Key", apiKey);
+
+                var response = await client.SendAsync(request);
+                bool ok = response.IsSuccessStatusCode;
+                if (!ok) {
+                    logAction?.Invoke("Delete failed: HTTP " + (int)response.StatusCode);
+                }
+                return ok;
+            } catch (Exception ex) {
+                logAction?.Invoke("Delete error: " + ex.Message);
+                return false;
             }
         }
 
@@ -147,28 +169,49 @@ namespace vPilot_MessageLive {
         }
 
         private string extractString(string json, string key) {
-            string search = "\"" + key + "\":\"";
-            int start = json.IndexOf(search);
-            if (start < 0) return "";
-            start += search.Length;
+            int start = findValueStart(json, key);
+            if (start < 0 || start >= json.Length || json[start] != '"') return "";
+
+            start++;
             int end = start;
             while (end < json.Length) {
                 if (json[end] == '\\') { end += 2; continue; }
                 if (json[end] == '"') break;
                 end++;
             }
-            return json.Substring(start, end - start).Replace("\\\"", "\"").Replace("\\n", "\n").Replace("\\r", "\r");
+            return unescapeJson(json.Substring(start, end - start));
         }
 
         private long extractLong(string json, string key) {
-            string search = "\"" + key + "\":";
-            int start = json.IndexOf(search);
+            int start = findValueStart(json, key);
             if (start < 0) return 0;
-            start += search.Length;
+
             int end = start;
-            while (end < json.Length && char.IsDigit(json[end])) end++;
+            while (end < json.Length && (char.IsDigit(json[end]) || json[end] == '-')) end++;
             long.TryParse(json.Substring(start, end - start), out long val);
             return val;
+        }
+
+        private int findValueStart(string json, string key) {
+            string search = "\"" + key + "\"";
+            int start = json.IndexOf(search);
+            if (start < 0) return -1;
+
+            start += search.Length;
+            while (start < json.Length && char.IsWhiteSpace(json[start])) start++;
+            if (start >= json.Length || json[start] != ':') return -1;
+            start++;
+            while (start < json.Length && char.IsWhiteSpace(json[start])) start++;
+            return start;
+        }
+
+        private string unescapeJson(string value) {
+            return value
+                .Replace("\\\\", "\\")
+                .Replace("\\\"", "\"")
+                .Replace("\\n", "\n")
+                .Replace("\\r", "\r")
+                .Replace("\\t", "\t");
         }
     }
 

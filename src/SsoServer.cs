@@ -59,7 +59,6 @@ namespace vPilot_MessageLive {
             var req = context.Request;
             var resp = context.Response;
 
-            // CORS headers
             resp.Headers.Add("Access-Control-Allow-Origin", "*");
             resp.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
             resp.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
@@ -72,7 +71,6 @@ namespace vPilot_MessageLive {
 
             string path = req.Url.AbsolutePath;
 
-            // GET /health — connection check
             if (path == "/health" && req.HttpMethod == "GET") {
                 bool configured = !string.IsNullOrEmpty(savedApiKey);
                 string json = "{\"status\":\"ok\",\"configured\":" + configured.ToString().ToLower() + "}";
@@ -80,7 +78,6 @@ namespace vPilot_MessageLive {
                 return;
             }
 
-            // POST /sso — save credentials
             if (path == "/sso" && req.HttpMethod == "POST") {
                 try {
                     string body;
@@ -88,7 +85,6 @@ namespace vPilot_MessageLive {
                         body = await reader.ReadToEndAsync();
                     }
 
-                    // Parse JSON: {"api_key":"...","encryption_key":"..."}
                     string apiKey = extractJsonString(body, "api_key");
                     string encKey = extractJsonString(body, "encryption_key");
 
@@ -97,24 +93,20 @@ namespace vPilot_MessageLive {
                         return;
                     }
 
-                    // Save to INI
                     saveCredentials(apiKey, encKey);
                     savedApiKey = apiKey;
                     savedEncryptionKey = encKey;
 
                     log("[SSO] Credentials saved for API: " + apiKey.Substring(0, Math.Min(8, apiKey.Length)) + "...");
-
-                    // Notify plugin to reload
                     onCredentialsSaved?.Invoke();
 
                     await sendJson(resp, "{\"success\":true}");
                 } catch (Exception ex) {
-                    await sendJson(resp, "{\"success\":false,\"error\":\"" + ex.Message.Replace("\"", "\\\"") + "\"}");
+                    await sendJson(resp, "{\"success\":false,\"error\":\"" + escapeJson(ex.Message) + "\"}");
                 }
                 return;
             }
 
-            // GET / — success page
             if (path == "/" && req.HttpMethod == "GET") {
                 await sendHtml(resp, getSuccessPage());
                 return;
@@ -125,18 +117,31 @@ namespace vPilot_MessageLive {
         }
 
         private void saveCredentials(string apiKey, string encKey) {
-            // Write to INI file
             settingsFile.Write("ApiKey", apiKey, "MessageLive");
             if (!string.IsNullOrEmpty(encKey)) {
                 settingsFile.Write("EncryptionKey", encKey, "MessageLive");
             }
-            // Enable all relay options by default
+
             settingsFile.Write("Private", "true", "Relay");
             settingsFile.Write("Radio", "true", "Relay");
             settingsFile.Write("Selcal", "true", "Relay");
             settingsFile.Write("Disconnect", "true", "Relay");
+            settingsFile.Write("Controllers", "false", "Relay");
             settingsFile.Write("Enabled", "true", "Receive");
             settingsFile.Write("Interval", "3", "Receive");
+            settingsFile.Write("DeleteAfterProcess", "false", "Receive");
+            settingsFile.Write("Enabled", "true", "Commands");
+            settingsFile.Write("Title", "command", "Commands");
+            settingsFile.Write("Prefix", "!", "Commands");
+            settingsFile.Write("Enabled", "true", "Status");
+            settingsFile.Write("Interval", "60", "Status");
+            settingsFile.Write("Enabled", "true", "Queue");
+            settingsFile.Write("RetryInterval", "10", "Queue");
+            settingsFile.Write("MaxAttempts", "5", "Queue");
+            settingsFile.Write("Enabled", "true", "Log");
+            settingsFile.Write("Fingerprints", "true", "Log");
+            settingsFile.Write("File", "vPilot-MessageLive.log", "Log");
+            settingsFile.Write("FingerprintFile", "vPilot-MessageLive.fingerprints.log", "Log");
         }
 
         private async Task sendJson(HttpListenerResponse resp, string json) {
@@ -156,29 +161,56 @@ namespace vPilot_MessageLive {
         }
 
         private string extractJsonString(string json, string key) {
-            string search = "\"" + key + "\":\"";
-            int start = json.IndexOf(search);
-            if (start < 0) return null;
-            start += search.Length;
+            int start = findValueStart(json, key);
+            if (start < 0 || start >= json.Length || json[start] != '"') return null;
+
+            start++;
             int end = start;
             while (end < json.Length) {
                 if (json[end] == '\\') { end += 2; continue; }
                 if (json[end] == '"') break;
                 end++;
             }
-            return json.Substring(start, end - start).Replace("\\\"", "\"");
+            return unescapeJson(json.Substring(start, end - start));
+        }
+
+        private int findValueStart(string json, string key) {
+            string search = "\"" + key + "\"";
+            int start = json.IndexOf(search);
+            if (start < 0) return -1;
+
+            start += search.Length;
+            while (start < json.Length && char.IsWhiteSpace(json[start])) start++;
+            if (start >= json.Length || json[start] != ':') return -1;
+            start++;
+            while (start < json.Length && char.IsWhiteSpace(json[start])) start++;
+            return start;
+        }
+
+        private string escapeJson(string value) {
+            if (value == null) return "";
+            return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+        }
+
+        private string unescapeJson(string value) {
+            return value
+                .Replace("\\\\", "\\")
+                .Replace("\\\"", "\"")
+                .Replace("\\n", "\n")
+                .Replace("\\r", "\r")
+                .Replace("\\t", "\t");
         }
 
         private string getSuccessPage() {
             return @"<!DOCTYPE html><html><head><meta charset=""UTF-8""><meta name=""viewport"" content=""width=device-width,initial-scale=1"">
-<title>Connected — MessageLive</title><style>
+<title>Connected - MessageLive</title><style>
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;background:#fff;color:#171A20;min-height:100vh;display:flex;align-items:center;justify-content:center}
 .c{text-align:center;padding:40px}
 .icon{font-size:64px;margin-bottom:16px}
 h1{font-size:24px;font-weight:500;margin-bottom:8px}
 p{font-size:14px;color:#5C5E62;margin-bottom:24px}
 .btn{display:inline-block;padding:12px 32px;font-size:14px;font-weight:500;text-decoration:none;border-radius:4px;background:#3E6AE1;color:#fff}
-</style></head><body><div class=""c""><div class=""icon"">✓</div><h1>Connected!</h1><p>Your credentials have been saved to vPilot.<br>You can close this tab and return to vPilot.</p><a href=""https://mlive.uk/dashboard"" class=""btn"">Open Dashboard</a></div></body></html>";
+</style></head><body><div class=""c""><div class=""icon"">&#10003;</div><h1>Connected!</h1><p>Your credentials have been saved to vPilot.<br>You can close this tab and return to vPilot.</p><a href=""https://mlive.uk/dashboard"" class=""btn"">Open Dashboard</a></div></body></html>";
         }
 
         private void log(string text) {
